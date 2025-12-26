@@ -1,31 +1,79 @@
-name: Spring Boot CI
-
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
-  build:
+  ai-review:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+      - name: Get PR diff
+        id: diff
+        run: |
+          git fetch origin main
+          git diff origin/main > diff.txt
+          
 
-      - name: Cache Maven packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-m2
+      - name: Send diff to OpenAI
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          DIFF_CONTENT=$(git diff origin/main -- src/main/java | head -c 6000)
 
-      - name: Build and test
-        run: mvn clean test
+          jq -n \
+            --arg diff "$DIFF_CONTENT" \
+            '{
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "system",
+                  content: "You are a senior Java Spring Boot engineer performing a code review."
+                },
+                {
+                  role: "user",
+                  content: ("Review the following code diff and provide feedback:\n\n" + $diff)
+                }
+              ]
+            }' > payload.json
+
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer '"$OPENAI_API_KEY"'" \
+            -d @payload.json)
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" > review.json
+
+      - name: Post comment to PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const raw = fs.readFileSync('review.json', 'utf8');
+            const response = JSON.parse(raw);
+
+            let comment;
+
+            if (response.error) {
+              comment = "❌ **AI Code Review Failed**\n\n" + response.error.message;
+            } else if (!response.choices || response.choices.length === 0) {
+              comment = "⚠️ **AI Code Review returned no suggestions**.";
+            } else {
+              comment = response.choices[0].message.content;
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "🤖 **AI Code Review**\n\n" + comment
+            });
