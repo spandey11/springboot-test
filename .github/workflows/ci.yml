@@ -21,7 +21,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          RESPONSE=$(curl https://api.openai.com/v1/chat/completions \
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -d '{
@@ -33,11 +33,12 @@ jobs:
                 },
                 {
                   "role": "user",
-                  "content": "Review the following code diff and give suggestions:\n\n'"$(cat diff.txt | sed 's/"/\\"/g')"'"
+                  "content": "Review the following code diff:\n\n'"$(cat diff.txt | head -c 6000 | sed 's/"/\\"/g')"'"
                 }
               ]
             }')
 
+          echo "$RESPONSE"
           echo "$RESPONSE" > review.json
 
       - name: Post comment to PR
@@ -45,10 +46,20 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const response = JSON.parse(fs.readFileSync('review.json', 'utf8'));
-            const comment = response.choices[0].message.content;
+            const raw = fs.readFileSync('review.json', 'utf8');
+            const response = JSON.parse(raw);
 
-            github.rest.issues.createComment({
+            let comment;
+
+            if (response.error) {
+              comment = "❌ **AI Code Review Failed**\n\n" + response.error.message;
+            } else if (!response.choices || response.choices.length === 0) {
+              comment = "⚠️ **AI Code Review returned no suggestions**.";
+            } else {
+              comment = response.choices[0].message.content;
+            }
+
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
