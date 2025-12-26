@@ -44,7 +44,6 @@ jobs:
             -d @payload.json)
 
           echo "$RESPONSE"
-          echo "$RESPONSE"
           echo "$RESPONSE" > review.json
 
       - name: Post comment to PR
