@@ -20,6 +20,7 @@ jobs:
         run: |
           git fetch origin main
           git diff origin/main > diff.txt
+          
 
       - name: Send diff to OpenAI
         env:
